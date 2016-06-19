@@ -1,0 +1,212 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+##PRACTICAL MACHINE LEARNING WEEK 4: COURSE PROJECT - Case Study on Exercise Data
+
+#Problem Statement
+By - Arshdeep Singh
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks.
+
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, we will use data recorded from accelerometers on the belt, forearm, arm, and dumbbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways.
+
+More information is available from the website http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The goal of this project is to predict the manner in which the participants did the exercise. This is the classe variable of the training set, which classifies the correct and incorrect outcomes into A, B, C, D, and E categories. 
+
+This write-up describes my approach to the problem outlined above in predicting the 'classe' of the 20 questions posed as the final exam of the course Practical Machine Learning offered by John Hopkins University from May 30th - June 27 (2016)
+
+#Input Data [1]
+
+The training data for this project are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+The test data are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+# Summary of Approach Idea:
+
+The course outlines a chain of stages for a predictor which is the basis of my attack on this problem:
+
+1.) Question
+  --->2.) Input Data
+      --->3.) Features
+          ---> 4.) Algorithm
+                --->5.) Parameters
+                      --->6.) Evaluation
+                      
+The question has been descirbed in the beginning. 
+Let's load the input data into the environment first.
+
+```{r}
+library(AppliedPredictiveModeling)
+library(caret)
+library(rattle)
+library(rpart.plot)
+set.seed(12345789)
+
+setwd("D:/coursera-pml")
+training <- read.csv("pml-training.csv", na.strings = c("NA", "#DIV/0!", ""))
+testing  <- read.csv("pml-testing.csv",  na.strings = c("NA", "#DIV/0!", ""))
+
+colnames_train <- colnames(training)
+colnames_test <- colnames(testing)
+# Verify that the column names (excluding classe and problem_id) are identical in the training and test set.
+all.equal(colnames_train[1:length(colnames_train)-1], colnames_test[1:length(colnames_train)-1])
+
+# Get an idea of the number of observation for each class
+table(training$classe)
+prop.table(table(training$classe))
+
+#Removing variables such as 'user_name', '*timestamps*'
+training <- training[, 7:160]
+testing  <- testing[, 7:160]
+
+is_data  <- apply(!is.na(training), 2, sum) >= 19622  # which is the number of observations
+training <- training[, is_data]
+testing  <- testing[, is_data]
+
+```
+
+#Partitioning the data 
+
+Let's partition the data for cross-validation:
+
+```{r}
+inTrain <- createDataPartition(y=training$classe, p=0.60, list=FALSE)
+train1  <- training[inTrain,]
+train2  <- training[-inTrain,]
+dim(train1)
+dim(train2)
+```
+
+We have successfully built our training-only data(train1) and testing-only data(train2) from our cleaned up data called training. 
+'train2' shall be used for cross-validation.
+
+#Features
+
+Further lets [i] In 'train1' let's identify the “zero covariates” and [ii] remove the very same “zero covariates”" from both train1 and train2
+
+```{r}
+nzv_cols <- nearZeroVar(train1)
+if(length(nzv_cols) > 0) {
+  train1 <- train1[, -nzv_cols]
+  train2 <- train2[, -nzv_cols]
+}
+dim(train1)
+dim(train2)
+
+library(randomForest)
+
+```
+
+We can see that there are 59 columns in our data sets which is obviously a considerably large number of co-variates. Let's try and reduce this number to get some more refining. 
+We accomplish this goal by using a randomForest() built (not from caret package for speed purposes) and using Gini plots form the same package (randomForest)
+
+```{r}
+fitModel <- randomForest(classe~., data=train1, importance=TRUE, ntree=100)
+varImpPlot(fitModel)
+
+```
+
+Let's use the top 10 features described by the above plots to build our models. If the accuracy of prediction obtained is fairly low we can reconsider this decision of pruning features but for now let's move forward with the same. 
+
+But, wait, we note that there are two variables at the very top : "cvtd_timestamp" and "raw_timestamp_part_1". These are obviously used to calculate other measures in the dataset and timestamps of these events will not be of much use to us. Hence, we discard these two. 
+
+Let’s analyze the correlations between these 10 chosen variables. The following code calculates the correlation matrix, replaces the 1s in the diagonal with 0s, and outputs which variables have an absolute value correlation above 80%:
+
+```{r}
+correl = cor(train1[,c("yaw_belt","roll_belt","pitch_belt","magnet_dumbbell_y","magnet_dumbbell_z","pitch_forearm","gyros_forearm_y","accel_dumbbell_y","magnet_belt_x")])
+diag(correl) <- 0
+which(abs(correl)>0.80, arr.ind=TRUE)
+```
+
+We see a high corealtion b/w 2 pairs of variables : ( roll_belt <--> yaw_belt ) & ( roll_belt <--> accel_belt_z  )
+Let's take a look at their individual corelation values
+
+```{r}
+cor(train1$roll_belt, train1$yaw_belt)
+cor(train1$magnet_belt_x, train1$pitch_belt)
+```
+
+Let's remove one variable from these two pairs to move ahead. I'll be doing away with yaw_belt and magnet_belt_x
+
+```{r}
+correl = cor(train1[,c("roll_belt","pitch_belt","magnet_dumbbell_y","magnet_dumbbell_z","pitch_forearm","gyros_forearm_y","accel_dumbbell_y")])
+diag(correl) <- 0
+maxCorrel <- max(correl)
+maxCorrel
+which(correl == maxCorrel, arr.ind = TRUE)
+```
+
+We see that the correlation now has dropped down to ~ 49% between accel_dumbbell_y & magnet_dumbbell_y
+Their correlation is safe to move ahead. 
+
+After plotting two features against each other colored according to classe we find an interesting realtionship between roll_belt & magnet_dumbbell_y 
+
+
+```{r}
+qplot(roll_belt, magnet_dumbbell_y, colour=classe, data=train1)
+```
+
+We could probably categorize the data into groups based on roll_belt values. Let's cross verify using decision trees.
+
+```{r}
+fitModel <- rpart(classe~., data=train1, method="class")
+prp(fitModel)
+```
+
+Our observation from qplot is aligned with our observation from decision trees. roll_belt is the foremost classifying variable.
+
+# Modelling
+
+After substantial exploration let's create our model. 
+We our using 7 variables for our model creation: "roll_belt","pitch_belt","magnet_dumbbell_y","magnet_dumbbell_z","pitch_forearm","gyros_forearm_y" & "accel_dumbbell_y".
+
+```{r}
+set.seed(23449202)
+fitModel <- train(classe~roll_belt+num_window+pitch_belt+magnet_dumbbell_y+magnet_dumbbell_z+pitch_forearm+gyros_forearm_y+roll_arm+accel_dumbbell_y,
+                  data=train1,
+                  method="rf",
+                  trControl=trainControl(method="cv",number=2),
+                  prox=TRUE,
+                  verbose=TRUE,
+                  allowParallel=TRUE)
+```
+
+We had checked that the maximum co-realtion between the pairs of these 7 features was ~49 %. We had also prepared our dataset for a 2 fold cross-validation earlier (train1 and train2). 
+
+
+#Accuracy (Cross-Validation)
+
+We use confusionMatrix on train2 for an estimate of how accurate our model is ?
+
+```{r}
+predictions <- predict(fitModel, newdata=train2)
+confusionMat <- confusionMatrix(predictions, train2$classe)
+confusionMat
+```
+
+
+As you can see the accuracy is 99.8 % .
+
+#Out of Sample Error
+
+```{r}
+missClass = function(values, predicted) {
+  sum(predicted != values) / length(values)
+}
+OOS_errRate = missClass(train2$classe, predictions)
+OOS_errRate
+```
+
+The out-of-samle error = 0.14 % 
+
+We are sure of this result because we have cross-validated our resulted. 
+
+#References:
+
+[1] Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz4C1NsQnz1
+
